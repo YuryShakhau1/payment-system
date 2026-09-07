@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: payment-system-ingress
+  namespace: payment-system
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+
+  tls:
+  - hosts:
+    - api.payment-system.local
+    - payment-system.local
+    secretName: local-ssl-secret
+
+  rules:
+    - host: api.payment-system.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8100
+
+    - host: payment-system.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: payment-system-ui
+                port:
+                  number: 3000

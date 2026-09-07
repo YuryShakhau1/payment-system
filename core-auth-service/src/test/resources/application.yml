@@ -1,0 +1,67 @@
+spring:
+  profiles:
+    active: test
+
+  datasource:
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate.ddl-auto: none
+    show-sql: ${SHOW_SQL:false}
+    properties:
+      hibernate:
+        format_sql: true
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: ${REDIS_SECRET_PASSWORD:deris_password_for_local_testing}
+
+  liquibase:
+    change-log: classpath:/db/changelog/db.changelog-master.yml
+    enabled: true
+
+  jwt:
+    secret: ${PRIVATE_KEY}
+    access-expiration: 900
+    refresh-expiration: 86400
+    max-session-count: 5
+    prod: false
+
+  kafka:
+    bootstrap-servers: ${KAFKA_HOST_PORT}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      max-poll-records: 100
+    listener:
+      type: batch
+      concurrency: 4
+      ack-mode: manual_immediate
+      immediate-stop: true
+
+  config:
+    import: optional:.env-local[.properties]
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  no-security: true
