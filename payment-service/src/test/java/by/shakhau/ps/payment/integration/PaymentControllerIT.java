@@ -1,0 +1,208 @@
+package by.shakhau.ps.payment.integration;
+
+import by.shakhau.ps.core.controller.filter.SimpleAuthenticationFilter.UserPrincipal;
+import by.shakhau.ps.payment.repository.PaymentRepository;
+import by.shakhau.ps.payment.repository.entity.PaymentEntity;
+import by.shakhau.ps.payment.repository.entity.PaymentStatus;
+import com.github.dockerjava.api.model.ExposedPort;
+import com.github.dockerjava.api.model.Ports;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.web.servlet.MockMvc;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.UUID;
+
+import static org.hamcrest.collection.IsCollectionWithSize.hasSize;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
+class PaymentControllerIT {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private PaymentRepository paymentRepository;
+
+    @Container
+    private static final GenericContainer<?> mongoDB = new GenericContainer<>("mongo:8.0")
+            .withEnv("MONGO_INITDB_ROOT_USERNAME", "db_username")
+            .withEnv("MONGO_INITDB_ROOT_PASSWORD", "db_password")
+            .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withPortBindings(
+                    new Ports(new ExposedPort(27017), Ports.Binding.bindPort(27017))));
+
+    static {
+        mongoDB.start();
+    }
+
+    private UUID userId;
+    private UUID sessionId;
+    private UUID orderId;
+    private UserPrincipal userPrincipal;
+    private Instant now;
+
+    @BeforeEach
+    void setUp() {
+        userId = UUID.randomUUID();
+        sessionId = UUID.randomUUID();
+        orderId = UUID.randomUUID();
+        userPrincipal = new UserPrincipal(userId, sessionId);
+        now = Instant.now();
+
+        paymentRepository.deleteAll();
+    }
+
+    @Test
+    void shouldReturnPaymentsPageWhenFindByCriteria() throws Exception {
+        var payment = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(userId)
+                .orderId(orderId)
+                .status(PaymentStatus.getBeginStatus())
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(500.00))
+                .build();
+        paymentRepository.save(payment);
+
+        String fromStr = now.minus(1, ChronoUnit.DAYS).toString();
+        String toStr = now.plus(1, ChronoUnit.DAYS).toString();
+
+        mockMvc.perform(get("/payments")
+                        .param("from", fromStr)
+                        .param("to", toStr)
+                        .param("orderId", orderId.toString())
+                        .param("status", PaymentStatus.getBeginStatus().name())
+                        .param("page", "0")
+                        .param("size", "10")
+                        .with(SecurityMockMvcRequestPostProcessors.user(userPrincipal))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(1)))
+                .andExpect(jsonPath("$.content[0].orderId").value(orderId.toString()))
+                .andExpect(jsonPath("$.content[0].status").value(PaymentStatus.getBeginStatus().name()))
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.totalPages").value(1))
+                .andExpect(jsonPath("$.number").value(0));
+    }
+
+    @Test
+    void shouldReturnCurrentUsersPaymentsWhenFindByCriteriaMe() throws Exception {
+        PaymentEntity payment = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(userId)
+                .orderId(orderId)
+                .status(PaymentStatus.getBeginStatus())
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(1200.00))
+                .build();
+
+        PaymentEntity otherPayment = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(UUID.randomUUID())
+                .orderId(UUID.randomUUID())
+                .status(PaymentStatus.getBeginStatus())
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(300.00))
+                .build();
+
+        paymentRepository.saveAll(List.of(payment, otherPayment));
+
+        String fromStr = now.minus(1, ChronoUnit.DAYS).toString();
+        String toStr = now.plus(1, ChronoUnit.DAYS).toString();
+
+        mockMvc.perform(get("/payments/me")
+                        .param("from", fromStr)
+                        .param("to", toStr)
+                        .param("status", PaymentStatus.getBeginStatus().name())
+                        .param("page", "0")
+                        .param("size", "10")
+                        .with(SecurityMockMvcRequestPostProcessors.user(userPrincipal))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(1)))
+                .andExpect(jsonPath("$.content[0].paymentAmount").value(1200.00))
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.totalPages").value(1));
+    }
+
+    @Test
+    void shouldReturnAggregatedUserTotalSumWhenTotalCurrentUserSum() throws Exception {
+        Instant from = now.minusSeconds(3600);
+        Instant to = now.plusSeconds(3600);
+
+        PaymentEntity firstPayment = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(userId)
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(100.50))
+                .build();
+
+        PaymentEntity secondPayment = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(userId)
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(200.50))
+                .build();
+
+        paymentRepository.saveAll(List.of(firstPayment, secondPayment));
+
+        mockMvc.perform(get("/payments/total-sum/me")
+                        .param("from", from.toString())
+                        .param("to", to.toString())
+                        .with(SecurityMockMvcRequestPostProcessors.user(userPrincipal))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(1)))
+                .andExpect(jsonPath("$.content[0].total").value(301));
+        ;
+    }
+
+    @Test
+    void shouldReturnPagedSliceOfAdminSumProjectionsWhenTotalSum() throws Exception {
+        Instant from = now.minusSeconds(3600);
+        Instant to = now.plusSeconds(3600);
+        UUID anotherUserId = UUID.randomUUID();
+
+        PaymentEntity payment1 = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(userId)
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(1000.00))
+                .build();
+
+        PaymentEntity payment2 = PaymentEntity.builder()
+                .id(UUID.randomUUID())
+                .userId(anotherUserId)
+                .createdAt(now)
+                .paymentAmount(BigDecimal.valueOf(2000.00))
+                .build();
+
+        paymentRepository.saveAll(List.of(payment1, payment2));
+
+        mockMvc.perform(get("/payments/total-sum")
+                        .param("from", from.toString())
+                        .param("to", to.toString())
+                        .param("page", "0")
+                        .param("size", "1")
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(1)))
+                .andExpect(jsonPath("$.last").value(false));
+    }
+}
